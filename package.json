@@ -1,0 +1,30 @@
+{
+  "name": "sequentio",
+  "version": "0.0.1",
+  "description": "Node clustering management with sequential initialization ",
+  "main": "sequentio.js",
+  "scripts": {
+    "test": "mocha test/**.test.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Portchain/node-sequentio.git"
+  },
+  "keywords": [
+    "cluster",
+    "sequential",
+    "initialize"
+  ],
+  "author": "Portchain ApS",
+  "license": "Apache-2.0",
+  "bugs": {
+    "url": "https://github.com/Portchain/node-sequentio/issues"
+  },
+  "homepage": "https://github.com/Portchain/node-sequentio#readme",
+  "dependencies": {
+    "logacious": "0.3.0"
+  },
+  "devDependencies": {
+    "mocha": "5.0.1"
+  }
+}
