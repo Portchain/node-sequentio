@@ -1,6 +1,6 @@
 {
   "name": "sequentio",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "Node clustering management with sequential initialization ",
   "main": "sequentio.js",
   "scripts": {
