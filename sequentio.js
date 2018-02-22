@@ -1,99 +1,135 @@
 
-const IS_PRODUCTION = process.env.NODE_ENV === 'production'
 const logger = require('logacious')()
+const path = require('path')
 const cluster = require('cluster')
+const EventEmitter = require('events')
 
-function Sequentio() {
-  this._workers = []
-  this._initializeFunctions = []
-  this._nextId = 0
-}
+class Sequentio extends EventEmitter {
 
-Sequentio.prototype.initialize = function(func) {
-  this._initializeFunctions.push({
-    func: func
-  })
-}
+  constructor() {
+    super()
+    
+    this._workers = []
+    this._initializeFunctions = []
+    this._nextId = 0
+    this._workerPool = []
+    this._crashToleranceDelay = 30 * 1000
+    cluster.setupMaster({
+      exec: path.join(__dirname, 'childProcess.js')
+    })
+  }
 
-Sequentio.prototype.worker = function(func, count) {
-  this._workers.push({
-    func: func,
-    count: count || 1
-  })
-  return this._workers.length - 1
-}
+  setCrashToleranceDelay(crashToleranceDelay) {
+    this._crashToleranceDelay = crashToleranceDelay
+  }
 
-Sequentio.prototype.start = function() {
-   if(cluster.isMaster) {
+  initialize(func) {
+    this._initializeFunctions.push({
+      func: func
+    })
+  }
+
+  worker(absoluteFilePath, count) {
+    this._workers.push({
+      idx: this._workers.length,
+      absoluteFilePath: absoluteFilePath,
+      count: count || 1,
+      childrenProcesses: []
+    })
+    return this._workers.length - 1
+  }
+
+  start() {
     this._initialize(() => {
       this._startWorkers()
     })
-  } else {
-    logger.info('Worker waiting for kickoff message with worker index')
-    process.on('message', (msg) => {
-      process.removeAllListeners('message')
-      logger.info('Worker received message', msg)
-      if(msg.hasOwnProperty('workerIdx')) {
-        if(this._workers[msg.workerIdx]) {
-          this._workers[msg.workerIdx].func()
-        } else {
-          logger.error('Worker cannot find proper data with index', msg)
+  }
+  kill() {
+    logger.info('Killing all workers')
+    this._workerPool.forEach((worker) => {
+      worker.kill('SIGQUIT')
+    })
+    this._workerPool = []
+  }
+
+  _initialize(callback) {
+    if(this._initializeFunctions && this._initializeFunctions.length > 0) {
+      let initializeFuncData = this._initializeFunctions.shift()
+      initializeFuncData.func((err) => {
+        if(err) {
+          logger.error(err)
           process.exit(1)
+        } else {
+          this._initialize(callback)
         }
-      }
-    })
-  }
-}
-
-Sequentio.prototype._initialize = function(callback) {
-  if(this._initializeFunctions && this._initializeFunctions.length > 0) {
-    let initializeFuncData = this._initializeFunctions.shift()
-    initializeFuncData.func((err) => {
-      if(err) {
-        logger.error(err)
-        process.exit(1)
-      } else {
-        this._initialize(callback)
-      }
-    })
-  } else {
-    logger.info('All initialization function successful.')
-    callback()
-  }
-}
-
-Sequentio.prototype._startWorkers = function() {
-  logger.info('Starting workers', this._workers.length)
-  var workerDefinitions = this._workers
-  workerDefinitions.forEach((workerDef, idx) => {
-    
-    logger.info('Worker with id #', idx, 'has', workerDef.count, 'concurrent processes')
-    
-    for(var j = 0 ; j < workerDef.count ; j++) {
-      
-      let worker = cluster.fork()
-      worker.send({workerIdx: idx})
-      this.emit('start', msg.workerIdx, worker)
-      
-      worker.on('exit', (worker, code, signal) => {
-        this.emit('exit', msg.workerIdx, worker)
-        if(!IS_PRODUCTION && code !== 0) {
-          process.exit(code)
-        }
-        
-        logger.warn(`Worker ${idx} died with (signal ${signal} and exit code ${code}). Restarting.`)
-        worker = cluster.fork()
-        worker.send({workerIdx: idx})
       })
+    } else {
+      logger.info('All initialization function successful.')
+      callback()
     }
-  })
-  
-  
-  
-  process.on('SIGQUIT', function() {
-    logger.info('SIGQUIT received, will exit now.')
-    process.exit(0)
-  })
+  }
+
+  _startWorker(workerDef) {
+    let worker = cluster.fork()
+    this._workerPool.push(worker)
+    this.emit('worker-started', workerDef.idx, worker)
+
+    let startedTime = Date.now()
+    const cleanupHandlers = () => {
+      if(worker) {
+        worker.removeListener('message', messageHandler)
+        worker.removeListener('exit', exitHandler)
+      }
+    }
+    const messageHandler = (msg) => {
+      if(msg === 'ready') {
+        worker.send({absoluteFilePath: workerDef.absoluteFilePath})
+      } else if(msg === 'running') {
+        logger.info(`Worker ${workerDef.idx} running`)
+        this.emit('worker-running', workerDef.idx, worker)
+      } else if(msg === 'error') {
+
+        worker.kill()
+        cleanupHandlers()
+        if((Date.now() - startedTime) < this._crashToleranceDelay) {
+          logger.error('Worker errored. It failed too soon after starting. It will not be restarted.')
+        } else {
+          logger.error('Worker errored. Restarting it.')
+          setTimeout(() => {
+            // fork the stack with a timeout to avoid stack overflow
+            this._startWorker(workerDef)
+          })
+        }
+      }
+    }
+    
+    const exitHandler = (w, code, signal) => {
+      worker.removeListener('message', messageHandler)
+      this.emit('worker-exited', workerDef.idx, worker)
+      logger.info(`Worker ${workerDef.idx} died with (signal ${signal} and exit code ${code})`)
+      cleanupHandlers()
+    }
+    worker.on('message', messageHandler)
+    
+    worker.on('exit', exitHandler)
+  }
+
+  _startWorkers() {
+    logger.info('Starting workers', this._workers.length)
+    var workerDefinitions = this._workers
+    
+    workerDefinitions.forEach((workerDef) => {
+      logger.info('Worker with id #', workerDef.idx, 'has', workerDef.count, 'concurrent processes')
+      for(var j = 0 ; j < workerDef.count ; j++) {
+        this._startWorker(workerDef)
+      }
+    })
+    
+    process.on('SIGQUIT', function() {
+      logger.info('SIGQUIT received, will exit now.')
+      process.exit(0)
+    })
+  }
 }
 
 module.exports = Sequentio

@@ -1,0 +1,2 @@
+
+process.send({singleWorker: true})
