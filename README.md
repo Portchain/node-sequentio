@@ -16,8 +16,9 @@ sequentio.initialize((done) => {
   })
 })
 
-// if a worker crashes within that delay (in seconds), it won't be restarted.
+// if a worker crashes within that delay (in milliseconds), it won't be restarted.
 //   set it to -1 to disable
+//   default delay is 30 seconds
 sequentio.setCrashToleranceDelay(10 * 1000) 
 sequentio.worker(path.join(__dirname, 'lib/myWebServer.js'), os.cpus().length)
 sequentio.worker(path.join(__dirname, 'lib/myLongRunningCronJob.js'), 1)
